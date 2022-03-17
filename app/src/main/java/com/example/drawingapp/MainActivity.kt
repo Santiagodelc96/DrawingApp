@@ -3,11 +3,12 @@ package com.example.drawingapp
 import android.Manifest
 import android.app.Activity
 import android.app.Dialog
+import android.app.DownloadManager
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
+import android.content.pm.PackageManager
+import android.graphics.*
 import android.media.Image
+import android.media.MediaScannerConnection
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.os.Environment
@@ -22,7 +23,14 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.get
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
+import java.lang.Exception
 
 
 private const val FILE_NAME = "photo.jpg"
@@ -31,11 +39,10 @@ class MainActivity : AppCompatActivity() {
 
     private var drawingView: DrawingView? = null
     private var mImageButtonCurrentPaint: ImageButton? = null
+    var customProgressDialog: Dialog? = null
 
-    /// Todo 2: create an ActivityResultLauncher with MultiplePermissions since we are requesting both read and write
-    val requestPermission: ActivityResultLauncher<Array<String>> =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()){
-                permissions ->
+    //Todo: create an ActivityResultLauncher with MultiplePermissions for requesting both read and write external storage and access the camera
+    val requestPermission: ActivityResultLauncher<Array<String>> = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()){ permissions ->
             permissions.entries.forEach{
                 val permissionName = it.key
                 val isGranted = it.value
@@ -43,20 +50,9 @@ class MainActivity : AppCompatActivity() {
                     when(permissionName){
                         Manifest.permission.READ_EXTERNAL_STORAGE -> {
                             Toast.makeText(this,"Permission granted for READ EXTERNAL STORAGE",Toast.LENGTH_SHORT).show()
-                            val picIntent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
-                            openGalleryLauncher.launch(picIntent)
                         }
                         else -> {
-                            Toast.makeText(this,"Permission granted for camera",Toast.LENGTH_SHORT).show()
-                            photoFile = getPhotoFile(FILE_NAME)
-                            val fileProvider = FileProvider.getUriForFile(this, "com.example.profilepicture.fileprovider", photoFile)
-                            val camIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                                .putExtra(MediaStore.EXTRA_OUTPUT, fileProvider)
-                            if (camIntent.resolveActivity(this.packageManager) != null){
-                                openCameraLauncher.launch(camIntent)
-                            } else{
-                                Toast.makeText(this,"Unable to open camera", Toast.LENGTH_SHORT).show()
-                            }
+                            Toast.makeText(this,"Permission granted for WRITING EXTERNAL STORAGE",Toast.LENGTH_SHORT).show()
                         }
                     }
                 }else{ //Todo: Displaying another toast if permission is not granted and this time focus on Read external storage
@@ -65,18 +61,55 @@ class MainActivity : AppCompatActivity() {
                             Toast.makeText(this,"Permission denied for READ EXTERNAL STORAGE",Toast.LENGTH_SHORT).show()
                         }
                         else -> {
-                            Toast.makeText(this,"Permission denied for camera",Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this,"Permission denied for WRITING EXTERNAL STORAGE",Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
             }
         }
 
+    //Todo: create an ActivityResultLauncher with MultiAction for do both read and write external storage and the camera action
+    val requestAction: ActivityResultLauncher<Array<String>> = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()){ actionRequested ->
+        actionRequested.entries.forEach{
+            val actionRequestedName = it.key
+            val isGranted = it.value
+            if(isGranted){
+                when(actionRequestedName){
+                    Manifest.permission.READ_EXTERNAL_STORAGE -> {
+                        val picIntent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+                        openGalleryLauncher.launch(picIntent)
+                    }
+                    else -> {
+                        if(isReadStorageAllowed()){
+                            showProgressDialog()
+                            lifecycleScope.launch{
+                                val flDrawingView: FrameLayout = findViewById(R.id.fl_drawing_view_container)
+                                val flDrawingViewBitmap: Bitmap = getBitmapFromView(flDrawingView)
+                                saveBitmapFile(flDrawingViewBitmap)
+                            }
+                        }
+                    }
+                }
+            }else{ //Todo: Displaying another toast if permission is not granted and this time focus on Read external storage
+                when(actionRequestedName){
+                    Manifest.permission.READ_EXTERNAL_STORAGE -> {
+                        Toast.makeText(this,"Permission denied for READ EXTERNAL STORAGE",Toast.LENGTH_SHORT).show()
+                    }
+                    else -> {
+                        Toast.makeText(this,"Permission denied for WRITING EXTERNAL STORAGE",Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         drawingView = findViewById(R.id.drawingView)
         drawingView?.setSizeForBrush(20.toFloat())
+
+        requestAllPermissions()
 
         val linearLayoutPaintColors = findViewById<LinearLayout>(R.id.ll_paint_colors)
 
@@ -91,7 +124,7 @@ class MainActivity : AppCompatActivity() {
         //TODO: (Adding an click event to image button for selecting the image from gallery.)
         val galleryButton: ImageButton = findViewById(R.id.ib_image_selector)
         galleryButton.setOnClickListener {
-            requestStoragePermission()
+            requestReadAction()
         }
 
         //TODO: (Adding an click event to image button to open the camera and take a picture.)
@@ -100,13 +133,14 @@ class MainActivity : AppCompatActivity() {
             drawingView?.onClickUndo()
         }
 
-        /*//TODO: (Adding an click event to image button to open the camera and take a picture.)
-        val cameraButton: ImageButton = findViewById(R.id.ib_image_taker)
-        cameraButton.setOnClickListener {
-            requestCameraPermission()
-        }*/
+        //TODO: (Adding an click event to image button to save the drawing in the the phone memory.)
+        val saveButton: ImageButton = findViewById(R.id.ib_save)
+        saveButton.setOnClickListener {
+            requestWriteAction()
+        }
     }
 
+    //TODO: Painting Methods
     //Method is used to launch the dialog to select different brush sizes.
     private fun showBrushSizeChooserDialog(){
         var brushDialog = Dialog(this)
@@ -143,7 +177,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    //Todo: create rationale dialog Shows rationale dialog for displaying why the app needs permission. Only shown if the user has denied the permission request previously
+    //Create rationale dialog Shows rationale dialog for displaying why the app needs permission. Only shown if the user has denied the permission request previously
     private fun showRationaleDialog(title: String, message: String) {
         val builder: AlertDialog.Builder = AlertDialog.Builder(this)
         builder.setTitle(title)
@@ -154,79 +188,169 @@ class MainActivity : AppCompatActivity() {
         builder.create().show()
     }
 
-    //Read Storage usage:
-    //Todo: create a method to requestStorage permission
-    private fun requestStoragePermission(){
+    //Method that allows to request all the app permissions:
+    private fun requestAllPermissions(){
         //Check if the permission was denied and show rationale
-        if(ActivityCompat.shouldShowRequestPermissionRationale(this,Manifest.permission.READ_EXTERNAL_STORAGE)){
+        if(ActivityCompat.shouldShowRequestPermissionRationale(this,Manifest.permission.READ_EXTERNAL_STORAGE) &&
+            ActivityCompat.shouldShowRequestPermissionRationale(this,Manifest.permission.WRITE_EXTERNAL_STORAGE) &&
+            ActivityCompat.shouldShowRequestPermissionRationale(this,Manifest.permission.CAMERA)){
             //call the rationale dialog to tell the user why they need to allow permission request
-            showRationaleDialog("Kids Drawing App", "Kids drawing app needs to access your external storage")
+            showRationaleDialog("Kids Drawing App", "Kids drawing app needs to access your external storage, and camera.")
         }else{
             //if it has not been denied then request for permission
             //he registered ActivityResultCallback gets the result of this request.
-            requestPermission.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE))
+            requestPermission.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE))
         }
     }
 
-    val openGalleryLauncher: ActivityResultLauncher<Intent> =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()){
-                result ->
-            if(result.resultCode == RESULT_OK && result.data!=null){
-                val imageBackground: ImageView = findViewById(R.id.iv_background)
+    //TODO: READ EXTERNAL STORAGE
+    //Method is used to launch the WRITE EXTERNAL STORAGE and save all the drawing in the phone memory.
+    private fun requestReadAction(){
+        //Check if the permission was denied and show rationale
+        if(ActivityCompat.shouldShowRequestPermissionRationale(this,Manifest.permission.READ_EXTERNAL_STORAGE)){
+            //call the rationale dialog to tell the user why they need to allow permission request
+            showRationaleDialog("Kids Drawing App", "Kids drawing app needs to access your external storage.")
+        }else{
+            //if it has not been denied then request for permission
+            //he registered ActivityResultCallback gets the result of this request.
+            requestAction.launch(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE))
+        }
+    }
 
+    //Activity result launcher that allows to open the gallery to select a background picture.
+    val openGalleryLauncher: ActivityResultLauncher<Intent> = registerForActivityResult(ActivityResultContracts.StartActivityForResult()){ result ->
+            if(result.resultCode == RESULT_OK && result.data!=null){ //Evaluates if the result variable info was carried correctly or not.
+                val imageBackground: ImageView = findViewById(R.id.iv_background)
                 imageBackground.setImageURI(result.data?.data)
+            }else {
+                Toast.makeText(this, "Gallery picture information could not be carried", Toast.LENGTH_SHORT).show() //Show a Toast.
             }
         }
 
-    //Camera usage functions:
-    //Todo: create a method to CAMERA permission
-    private fun requestCameraPermission() {
-        //Todo: Check if the permission was denied and show rationale
-        if(ActivityCompat.shouldShowRequestPermissionRationale(this,Manifest.permission.CAMERA)){
+    //Method that allows to check the READ_EXTERNAL_STORAGE permission.
+    private fun isReadStorageAllowed(): Boolean{
+        val result = ContextCompat.checkSelfPermission(this,Manifest.permission.READ_EXTERNAL_STORAGE)
+        return result == PackageManager.PERMISSION_GRANTED
+    }
+
+    //TODO: WRITE EXTERNAL STORAGE:
+
+    //Method that allows to get a Bitmap from a view:
+    private fun getBitmapFromView(view: View): Bitmap{
+        // CreateBitmap : Returns a mutable bitmap with the specified width and height
+        val returnedBitmap = Bitmap.createBitmap(view.width,view.height,Bitmap.Config.ARGB_8888) //Create a Bitmap with the same size of the view.
+        //Bind a canvas to it
+        val canvas = Canvas(returnedBitmap) //Generate a Canvas that host the draw class (writing into a bitmap) with the view information.
+        val backgroundDrawable = view.background //View background is saved since is another layer of the drawing layer.
+        if(backgroundDrawable != null){ //Check if the background is empty or if it has a picture background.
+            backgroundDrawable.draw(canvas) //Get the background drawable, then draw it on the canvas
+        }else{
+            canvas.drawColor(Color.WHITE) //If it does not have background drawable, then draw white background on the canvas
+        }
+        view.draw(canvas) //Write the Bitmap of the view to add the Views inside of the Frame Layout and make it one view. (Draw the view on the canvas)
+        return  returnedBitmap
+    }
+
+    //Method to save the Drawing:
+    private suspend fun saveBitmapFile(mBitmap: Bitmap): String{
+        var result = ""
+        withContext(Dispatchers.IO){
+            if(mBitmap != null){
+                try{
+                    val bytes = ByteArrayOutputStream() // The buffer capacity is initially 32 bytes, though its size increases if necessary.
+                    mBitmap.compress(Bitmap.CompressFormat.PNG,90, bytes)
+                    /**
+                     * Write a compressed version of the bitmap to the specified outputstream.
+                     * If this returns true, the bitmap can be reconstructed by passing a
+                     * corresponding inputstream to BitmapFactory.decodeStream(). Note: not
+                     * all Formats support all bitmap configs directly, so it is possible that
+                     * the returned bitmap from BitmapFactory could be in a different bitdepth,
+                     * and/or may have lost per-pixel alpha (e.g. JPEG only supports opaque
+                     * pixels).
+                     *
+                     * @param format   The format of the compressed image
+                     * @param quality  Hint to the compressor, 0-100. 0 meaning compress for
+                     *                 small size, 100 meaning compress for max quality. Some
+                     *                 formats, like PNG which is lossless, will ignore the
+                     *                 quality setting
+                     * @param stream   The outputstream to write the compressed data.
+                     * @return true if successfully compressed to the specified stream.
+                     */
+
+                    val file = File(externalCacheDir?.absoluteFile.toString() + File.separator + "DrawingApp_" + System.currentTimeMillis() /1000 + ".png")
+                    // Here the Environment : Provides access to environment variables.
+                    // getExternalStorageDirectory : returns the primary shared/external storage directory.
+                    // absoluteFile : Returns the absolute form of this abstract pathname.
+                    // File.separator : The system-dependent default name-separator character. This string contains a single character.
+
+                    val fileOutputStream = FileOutputStream(file) // Creates a file output stream to write to the file represented by the specified object.
+                    fileOutputStream.write(bytes.toByteArray()) // Writes bytes from the specified byte array to this file output stream.
+                    fileOutputStream.close() // Closes this file output stream and releases any system resources associated with this stream. This file output stream may no longer be used for writing bytes.
+
+                    result = file.absolutePath // The file absolute path is return as a result.
+
+                    //Switch from io to ui thread to show a toast
+                    runOnUiThread{
+                        cancelProgressDialog()
+                        if(result.isNotEmpty()){
+                            Toast.makeText(this@MainActivity, "File saved successfully: $result",Toast.LENGTH_SHORT).show()
+                            shareImage(result)
+                        }else{
+                            Toast.makeText(this@MainActivity, "Something went wrong while saving the file",Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }catch (e: Exception){
+                    result = ""
+                    e.printStackTrace()
+                }
+            }
+        }
+        return result
+    }
+
+    //Method is used to launch the WRITE EXTERNAL STORAGE and save all the drawing in the phone memory.
+    private fun requestWriteAction() {
+        //Check if the permission was denied and show rationale
+        if(ActivityCompat.shouldShowRequestPermissionRationale(this,Manifest.permission.WRITE_EXTERNAL_STORAGE)){
+            //call the rationale dialog to tell the user why they need to allow permission request
             showRationaleDialog("Kids Drawing App", "Kids drawing app needs to access your camera")
         }else{
-            // Todo: if it has not been denied then request for permission
-            //  The registered ActivityResultCallback gets the result of this request.
-            requestPermission.launch(arrayOf(Manifest.permission.CAMERA))
+            //if it has not been denied then request for permission
+            //he registered ActivityResultCallback gets the result of this request.
+            requestAction.launch(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE))
         }
     }
 
-    val openCameraLauncher:  ActivityResultLauncher<Intent> =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()){
-                result ->
-            if (result.resultCode == Activity.RESULT_OK){
-                val imageBackground: ImageView = findViewById(R.id.iv_background)
-                val userPicture = BitmapFactory.decodeFile(photoFile.absolutePath)
-                val rotatedUserPicture =rotateBitmap(userPicture)
-                imageBackground.setImageBitmap(rotatedUserPicture)
-            } else {
-                Toast.makeText(this, "Picture information could not be retreived", Toast.LENGTH_SHORT).show()
-            }
+    //TODO: Progress dialog
+    //Method that allow to display a progress dialog:
+    private fun showProgressDialog() {
+        customProgressDialog = Dialog(this)
 
-        }
+        /*Set the screen content from a layout resource.
+        The resource will be inflated, adding all top-level views to the screen.*/
+        customProgressDialog?.setContentView(R.layout.dialog_custom_progress)
 
-    private fun takePictureIntent(){
-        photoFile = getPhotoFile(FILE_NAME)
-        val fileProvider = FileProvider.getUriForFile(this, "com.example.profilepicture.fileprovider", photoFile)
-        val takePictureIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-            .putExtra(MediaStore.EXTRA_OUTPUT, fileProvider)
-        if (takePictureIntent.resolveActivity(this.packageManager) != null){
-            openCameraLauncher.launch(takePictureIntent)
-        } else{
-            Toast.makeText(this,"Unable to open camera", Toast.LENGTH_SHORT).show()
+        //Start the dialog and display it on screen.
+        customProgressDialog?.show()
+    }
+
+    //Method that cancel the progress Dialog:
+    private fun cancelProgressDialog(){
+        if(customProgressDialog != null){
+            customProgressDialog?.dismiss()
+            customProgressDialog = null
         }
     }
 
-    private fun getPhotoFile(fileName: String): File {
-        val storageDirectory = getExternalFilesDir(Environment.DIRECTORY_PICTURES)
-        return File.createTempFile(fileName, ".jpg", storageDirectory)
-    }
-
-    fun rotateBitmap(source: Bitmap, degrees: Float = 90f): Bitmap {
-        val matrix = Matrix()
-        matrix.postRotate(90F)
-        return Bitmap.createBitmap(
-            source, 0, 0, source.width, source.height, matrix, true
-        )
+    //TODO: Sharing the drawing
+    private fun shareImage(result:String){
+        MediaScannerConnection.scanFile(this,arrayOf(result),null){ path, uri ->
+            val shareIntent = Intent()
+            shareIntent.action = Intent.ACTION_SEND
+            shareIntent.putExtra(Intent.EXTRA_STREAM,uri)
+            shareIntent.type = "image/png"
+            startActivity(Intent.createChooser(shareIntent,"Share"))
+        }
     }
 }

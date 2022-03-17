@@ -23,7 +23,7 @@
               android:layout_width="match_parent"
               android:layout_height="match_parent"
               android:scaleType="centerCrop"
-              android:src="@drawable/paris"/>
+              tools:src="@drawable/paris"/>
 
           <com.example.drawingapp.DrawingView
               android:id="@+id/drawingView"
@@ -31,8 +31,6 @@
               android:layout_height="match_parent"
               android:background="#80FFFFFF"/>
      </FrameLayout>
-
-
 
      <LinearLayout
          android:id="@+id/ll_paint_colors"
@@ -195,19 +193,19 @@
               android:scaleType="fitXY"/>
 
           <ImageButton
-              android:id="@+id/ib_image_taker"
-              android:layout_width="50dp"
-              android:layout_height="50dp"
-              android:layout_margin="5dp"
-              android:src="@android:drawable/ic_menu_camera"
-              android:scaleType="fitXY"/>
-
-          <ImageButton
               android:id="@+id/ib_undo"
               android:layout_width="50dp"
               android:layout_height="50dp"
               android:layout_margin="5dp"
               android:src="@drawable/ic_undo"
+              android:scaleType="fitXY"/>
+
+          <ImageButton
+              android:id="@+id/ib_save"
+              android:layout_width="50dp"
+              android:layout_height="50dp"
+              android:layout_margin="5dp"
+              android:src="@android:drawable/ic_menu_save"
               android:scaleType="fitXY"/>
      </LinearLayout>
 
